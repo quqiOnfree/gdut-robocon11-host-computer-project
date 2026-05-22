@@ -18,7 +18,7 @@ public:
         classNames_(classNames) {}
 
 private:
-  ClassResult process_impl(const cv::Mat &frame, float /*confThres unused*/) {
+  ClassResult processImpl(const cv::Mat &frame, float /*confThres unused*/) {
     float ratio, dw, dh;
     auto inputTensor = preprocess(frame, ratio, dw, dh);
     auto outputs = runInference(inputTensor);

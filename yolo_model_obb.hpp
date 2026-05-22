@@ -42,7 +42,7 @@ public:
   }
 
 private:
-  std::vector<ObbDetection> process_impl(const cv::Mat &frame,
+  std::vector<ObbDetection> processImpl(const cv::Mat &frame,
                                          float confThres) {
     float ratio, dw, dh;
     auto inputTensorValues = preprocess(frame, ratio, dw, dh);

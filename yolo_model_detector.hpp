@@ -43,7 +43,7 @@ public:
   }
 
 private:
-  std::vector<Detection> process_impl(const cv::Mat &frame, float confThres) {
+  std::vector<Detection> processImpl(const cv::Mat &frame, float confThres) {
     float ratio, dw, dh;
     auto inputTensorValues = preprocess(frame, ratio, dw, dh);
     auto outputs = runInference(inputTensorValues);

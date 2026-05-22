@@ -8,7 +8,6 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <iostream>
 #include <string>
 #include <vector>
 
@@ -32,7 +31,7 @@ public:
 
   // 对单帧图像做检测
   auto process(const cv::Mat &frame, float confThres = 0.25f) {
-    return static_cast<Derived *>(this)->process_impl(frame, confThres);
+    return static_cast<Derived *>(this)->processImpl(frame, confThres);
   }
 
 protected:

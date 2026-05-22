@@ -26,7 +26,7 @@ public:
   }
 
 private:
-  std::vector<PoseResult> process_impl(const cv::Mat &frame, float confThres) {
+  std::vector<PoseResult> processImpl(const cv::Mat &frame, float confThres) {
     float ratio, dw, dh;
     auto inputTensor = preprocess(frame, ratio, dw, dh);
     auto outputs = runInference(inputTensor);

@@ -28,7 +28,7 @@ public:
   }
 
 private:
-  cv::Mat process_impl(const cv::Mat &frame, float /*unused*/) {
+  cv::Mat processImpl(const cv::Mat &frame, float /*unused*/) {
     float ratio, dw, dh;
     auto inputTensor = preprocess(frame, ratio, dw, dh);
     auto outputs = runInference(inputTensor);
