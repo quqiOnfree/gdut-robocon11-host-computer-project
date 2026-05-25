@@ -14,7 +14,7 @@ public:
 
   YoloOnnxClassifier(const std::filesystem::path &modelPath,
                      const std::vector<std::string> &classNames)
-      : YoloOnnxProcessor<YoloOnnxClassifier>(modelPath),
+      : YoloOnnxProcessor<YoloOnnxClassifier>(modelPath, false),
         classNames_(classNames) {}
 
 private:

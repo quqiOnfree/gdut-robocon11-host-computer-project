@@ -34,71 +34,86 @@ public:
         detect_conf_(detect_conf), seg_conf_(seg_conf),
         min_face_area_(min_face_area) {}
 
-  // 处理一张图像，返回所有检测到的面的分类结果
-  std::vector<FaceResult> process(const cv::Mat &image) {
-    std::vector<FaceResult> results;
-
-    // 1. 检测方块
-    auto detections = detector_.process(image, detect_conf_);
-    for (size_t i = 0; i < detections.size(); ++i) {
-      const auto &det = detections[i];
-      // 稍微扩大裁剪区域
-      int pad = 10;
-      cv::Rect roi = det.box;
-      roi.x -= pad;
-      roi.y -= pad;
-      roi.width += 2 * pad;
-      roi.height += 2 * pad;
-      roi = roi & cv::Rect(0, 0, image.cols, image.rows); // 限制在图像内
-      if (roi.width <= 0 || roi.height <= 0)
-        continue;
-
-      cv::Mat cropped = image(roi).clone();
-
-      // 2. 实例分割面（在裁剪图上运行）
-      auto instances = segmentor_.process(cropped, seg_conf_);
-      for (size_t j = 0; j < instances.size(); ++j) {
-        auto &inst = instances[j];
-        if (inst.polygon.size() < 3)
-          continue;
-
-        std::vector<cv::Point> contour;
-        contour.resize(inst.polygon.size());
-        std::transform(inst.polygon.begin(), inst.polygon.end(),
-                       contour.begin(), [](cv::Point2f p) {
-                         return cv::Point{static_cast<int>(p.x),
-                                          static_cast<int>(p.y)};
-                       });
-
-        // 检测面积大小
-        if (cv::contourArea(inst.polygon) < min_face_area_)
-          continue;
-
-        // 近似为四边形
-        auto quad = approxToQuad(contour);
-        if (quad.size() != 4)
-          continue;
-
-        // 3. 透视矫正
-        cv::Mat warped = warpPolygonToSquare(cropped, quad, warp_size_);
-
-        // 4. 分类
-        auto cls = classifier_.process(warped);
-        if (cls.classId < 0)
-          continue;
-
-        FaceResult fr;
-        fr.warped_face = warped;
-        fr.class_id = cls.classId;
-        fr.class_name = cls.className;
-        fr.confidence = cls.confidence;
-        fr.source_bbox = det.box; // 原始检测框（全图坐标）
-        fr.face_index = static_cast<int>(j);
-        results.push_back(fr);
-      }
-    }
-    return results;
+  /** 阶段1：检测图像中的所有方块 */
+  std::vector<YoloOnnxDetector::Detection> detectBlocks(const cv::Mat &image) {
+    return detector_.process(image, detect_conf_);
   }
+
+  // 从全图和检测框提取裁剪子图（公开，方便用户获取裁剪图）
+  cv::Mat cropBlock(const cv::Mat &image, const cv::Rect &box,
+                    int pad = 0) const {
+    cv::Rect roi = box;
+    roi.x -= pad;
+    roi.y -= pad;
+    roi.width += 2 * pad;
+    roi.height += 2 * pad;
+    roi &= cv::Rect(0, 0, image.cols, image.rows);
+    if (roi.width <= 0 || roi.height <= 0)
+      return cv::Mat();
+    return image(roi).clone();
+  }
+
+  /** 阶段2：从单个方块区域提取并透视矫正所有面（不分类） */
+  std::vector<YoloOnnxSegmentor::SegmentedFace>
+  extractInstances(const cv::Mat &image,
+                   const YoloOnnxDetector::Detection &block) {
+    // 运行分割，直接返回 SegmentedFace 列表
+    return segmentor_.process(image, seg_conf_);
+  }
+
+  /** 阶段3：对单个矫正后的面进行分类 */
+  FaceResult classifyFace(const cv::Mat &cropped_image,
+                          const YoloOnnxSegmentor::SegmentedFace &face,
+                          const cv::Rect &source_box, int face_index = 0) {
+    FaceResult result;
+    result.source_bbox = source_box;
+    result.face_index = face_index;
+
+    // 1. 从二值掩码中找轮廓
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(face.binary_mask, contours, cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
+    if (contours.empty())
+      return result;
+
+    // 2. 取面积最大的轮廓，并检查面积阈值
+    auto biggest = std::max_element(
+        contours.begin(), contours.end(),
+        [](const std::vector<cv::Point> &a, const std::vector<cv::Point> &b) {
+          return cv::contourArea(a) < cv::contourArea(b);
+        });
+    if (cv::contourArea(*biggest) < min_face_area_)
+      return result;
+
+    // 3. 四边形近似
+    auto quad = approxToQuad(*biggest);
+    if (quad.size() != 4)
+      return result;
+
+    // 4. 透视矫正
+    cv::Mat warped = warpPolygonToSquare(cropped_image, quad, warp_size_);
+
+    cv::imshow("Warped Face", warped); // 显示矫正图（调试用）
+
+    // 5. 分类
+    auto cls = classifier_.process(warped);
+    if (cls.classId < 0)
+      return result;
+
+    result.warped_face = warped;
+    result.class_id = cls.classId;
+    result.class_name = cls.className;
+    result.confidence = cls.confidence;
+    return result;
+  }
+
+  YoloOnnxDetector &getDetector() { return detector_; }
+  YoloOnnxSegmentor &getSegmentor() { return segmentor_; }
+  YoloOnnxClassifier &getClassifier() { return classifier_; }
+
+  const YoloOnnxDetector &getDetector() const { return detector_; }
+  const YoloOnnxSegmentor &getSegmentor() const { return segmentor_; }
+  const YoloOnnxClassifier &getClassifier() const { return classifier_; }
 
 private:
   YoloOnnxDetector detector_;

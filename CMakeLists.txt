@@ -24,6 +24,12 @@ target_link_libraries(model_test PUBLIC
   onnxruntime::onnxruntime
 )
 
+add_custom_command(TARGET model_test POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:onnxruntime::onnxruntime>
+          $<TARGET_FILE_DIR:model_test>
+)
+
 target_compile_options(model_test PUBLIC
   "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>"
 )
