@@ -1,5 +1,5 @@
 #include "transfer_protocol.hpp"
-#include "yolo_model_weapon.hpp"
+#include "yolo_model_detector.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
 
     // ---- 模型 ----
     std::cout << "加载模型: " << modelPath << "\n";
-    YoloOnnxWeapon weapon(modelPath, {"weapon", "itf"});
+    YoloOnnxDetector weapon(modelPath, {"weapon", "itf"});
     std::cout << "模型输入: " << weapon.inputW() << "x" << weapon.inputH()
               << "\n";
 
@@ -111,15 +111,15 @@ int main(int argc, char *argv[]) {
 
       // weapon → ITF 级联检测
       const auto weapons =
-          YoloOnnxWeapon::getByClass(allDets, weaponClassId);
-      const auto itfs = YoloOnnxWeapon::getByClass(allDets, itfClassId);
+          YoloOnnxDetector::getByClass(allDets, weaponClassId);
+      const auto itfs = YoloOnnxDetector::getByClass(allDets, itfClassId);
 
-      const YoloOnnxWeapon::Detection *targetItf = nullptr;
-      const YoloOnnxWeapon::Detection *centerWeapon = nullptr;
+      const YoloOnnxDetector::Detection *targetItf = nullptr;
+      const YoloOnnxDetector::Detection *centerWeapon = nullptr;
 
       if (!weapons.empty()) {
         centerWeapon =
-            YoloOnnxWeapon::nearestToCenter(weapons, frame.size());
+            YoloOnnxDetector::nearestToCenter(weapons, frame.size());
         if (centerWeapon) {
           for (const auto &itf : itfs) {
             if (centerWeapon->box.contains(itf.center())) {
@@ -165,7 +165,7 @@ int main(int argc, char *argv[]) {
       // 可视化
       if (showWindow) {
         cv::Mat display = frame.clone();
-        YoloOnnxWeapon::drawDetections(display, allDets);
+        YoloOnnxDetector::drawDetections(display, allDets);
 
         cv::drawMarker(display, imgCenter, cv::Scalar(0, 255, 0),
                        cv::MARKER_CROSS, 20, 2);
