@@ -1,17 +1,23 @@
 #include "transfer_protocol.hpp"
-#include "yolo_model_detector.hpp"
+#include "weapon_pipeline.hpp"
+#include "serial_connector.hpp"
 
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 int main(int argc, char *argv[]) {
+  #ifdef _WIN32
+  std::system("chcp 65001 > nul"); // Windows 下启用 UTF-8 输出
+  #endif
   try {
     // ---- 参数 ----
     const char *env_model = std::getenv("WEAPON_MODEL_PATH");
@@ -19,13 +25,16 @@ int main(int argc, char *argv[]) {
         env_model ? env_model : "model/weapon_pickup.onnx";
 
     const char *env_port = std::getenv("SERIAL_PORT");
+  #ifdef _WIN32
+    std::string serialPort = env_port ? env_port : "COM12";
+  #else
     std::string serialPort = env_port ? env_port : "/dev/ttyUSB0";
+  #endif
 
     int cameraIndex = 0;
     float confThres = 0.25f;
-    int weaponClassId = 0;
-    int itfClassId = 1;
     bool showWindow = true;
+    bool useSerial = true;
 
     for (int i = 1; i < argc; ++i) {
       std::string arg(argv[i]);
@@ -37,12 +46,14 @@ int main(int argc, char *argv[]) {
         confThres = std::stof(argv[++i]);
       else if (arg == "--port" && i + 1 < argc)
         serialPort = argv[++i];
+      else if (arg == "--no-serial")
+        useSerial = false;
       else if (arg == "--no-window")
         showWindow = false;
       else {
         std::cerr
             << "用法: " << argv[0]
-            << " [--model PATH] [--camera N] [--conf F] [--port PATH] [--no-window]\n";
+            << " [--model PATH] [--camera N] [--conf F] [--port PATH] [--no-serial] [--no-window]\n";
         return 1;
       }
     }
@@ -52,36 +63,59 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    // ---- 传输协议 ----
+    // ---- 串口异步通信 ----
     using namespace gdut;
     using packet_t = data_packet<crc16_algorithm>;
 
-    packet_manager<crc16_algorithm> manager;
-    std::ofstream serialOut;
+    asio::io_context ioContext;
+    auto workGuard = asio::make_work_guard(ioContext);
+    std::thread ioThread([&ioContext]() { ioContext.run(); });
 
-    if (!serialPort.empty()) {
-      serialOut.open(serialPort, std::ios::binary);
-      if (serialOut.is_open()) {
-        manager.set_send_function(
-            [&serialOut](const uint8_t *begin, const uint8_t *end) {
-              serialOut.write(reinterpret_cast<const char *>(begin),
-                              end - begin);
-              serialOut.flush();
-            });
-        std::cout << "串口输出: " << serialPort << "\n";
-      } else {
-        std::cerr << "无法打开串口: " << serialPort
-                  << " (仅显示模式运行)\n";
+    std::unique_ptr<SerialConnector> serialConnector;
+
+    if (useSerial && !serialPort.empty()) {
+      try {
+        serialConnector = std::make_unique<SerialConnector>(serialPort, ioContext);
+        std::cout << "串口已连接: " << serialPort << "\n";
+      } catch (const std::exception &ex) {
+        std::cerr << "串口初始化失败: " << ex.what() << " (仅显示模式运行)\n";
       }
+    } else {
+      std::cout << "串口已禁用 (--no-serial)\n";
+    }
+
+    std::function<void()> startAsyncReceive;
+    startAsyncReceive = [&]() {
+      if (!serialConnector)
+        return;
+
+      serialConnector->asyncReceive(
+          [&](std::error_code ec, SerialConnector::packet_t packet) {
+            if (ec) {
+              std::cerr << "串口接收错误: " << ec.message() << "\n";
+              return;
+            }
+
+            std::cout << "收到串口包: code=0x" << std::hex << packet.code()
+                      << std::dec << " size=" << packet.body_size() << "\n";
+
+            if (serialConnector) {
+              startAsyncReceive();
+            }
+          });
+    };
+
+    if (serialConnector) {
+      startAsyncReceive();
     }
 
     constexpr uint16_t weapon_code = 0x0001;
 
-    // ---- 模型 ----
+    // ---- 管线 ----
     std::cout << "加载模型: " << modelPath << "\n";
-    YoloOnnxDetector weapon(modelPath, {"weapon", "itf"});
-    std::cout << "模型输入: " << weapon.inputW() << "x" << weapon.inputH()
-              << "\n";
+    WeaponPipeline pipeline(modelPath, {"weapon", "itf"}, 0, 1, confThres);
+    std::cout << "模型输入: " << pipeline.getDetector().inputW() << "x"
+              << pipeline.getDetector().inputH() << "\n";
 
     // ---- 摄像头 ----
     std::cout << "打开摄像头 " << cameraIndex << "...\n";
@@ -104,92 +138,48 @@ int main(int argc, char *argv[]) {
         continue;
       frameCount++;
 
-      const cv::Point imgCenter(frame.cols / 2, frame.rows / 2);
+      // Stage 1 + 2: 检测 + 匹配
+      auto target = pipeline.process(frame);
 
-      // YOLO 推理
-      const auto allDets = weapon.process(frame, confThres);
+      // 发送 X 轴距离（右正左负）
+      if (target.found) {
+        std::vector<uint8_t> body(sizeof(int16_t));
+        int16_t number = static_cast<int16_t>(std::floor(target.distance));
+        std::memcpy(body.data(), &number, sizeof(int16_t));
 
-      // weapon → ITF 级联检测
-      const auto weapons =
-          YoloOnnxDetector::getByClass(allDets, weaponClassId);
-      const auto itfs = YoloOnnxDetector::getByClass(allDets, itfClassId);
-
-      const YoloOnnxDetector::Detection *targetItf = nullptr;
-      const YoloOnnxDetector::Detection *centerWeapon = nullptr;
-
-      if (!weapons.empty()) {
-        centerWeapon =
-            YoloOnnxDetector::nearestToCenter(weapons, frame.size());
-        if (centerWeapon) {
-          for (const auto &itf : itfs) {
-            if (centerWeapon->box.contains(itf.center())) {
-              if (!targetItf || itf.score > targetItf->score)
-                targetItf = &itf;
-            }
-          }
-        }
-      }
-
-      // 发送欧式距离（右正左负）
-      if (targetItf) {
-        float distance = static_cast<float>(
-            cv::norm(imgCenter - targetItf->center()));
-        if (targetItf->center().x < imgCenter.x)
-          distance = -distance;
-
-        std::vector<uint8_t> body(sizeof(float));
-        std::memcpy(body.data(), &distance, sizeof(float));
-
-        packet_t packet(weapon_code, body.begin(), body.end(),
-                        build_packet);
-        if (packet) {
-          manager.send(packet);
+        auto packet = std::make_shared<packet_t>(weapon_code, body.begin(), body.end(), build_packet);
+        if (*packet && serialConnector) {
+          serialConnector->asyncSend(
+              *packet,
+              [packet](std::error_code ec, std::size_t bytesTransferred) {
+                if (ec) {
+                  std::cerr << "串口发送错误: " << ec.message() << "\n";
+                  return;
+                }
+                (void)bytesTransferred;
+              });
         }
       }
 
       // 终端输出
-      if (targetItf) {
-        cv::Point c = targetItf->center();
-        float distance = static_cast<float>(
-            cv::norm(imgCenter - c));
-        std::cout << "ITF: (" << c.x << ", " << c.y << ")"
-                  << "  dist=" << distance
-                  << "  score=" << targetItf->score
-                  << "  weapon=(" << centerWeapon->center().x << ","
-                  << centerWeapon->center().y << ")"
-                  << "  detections=" << allDets.size() << "\n";
-      } else if (centerWeapon) {
-        std::cout << "无 ITF  weapon=(" << centerWeapon->center().x
-                  << "," << centerWeapon->center().y << ")"
-                  << "  detections=" << allDets.size() << "\n";
+      if (target.found) {
+        std::cout << "ITF: (" << target.itf_center.x << ", "
+                  << target.itf_center.y << ")"
+                  << "  dist=" << target.distance
+                  << "  score=" << target.itf_score
+                  << "  weapon=(" << target.weapon_center.x << ","
+                  << target.weapon_center.y << ")\n";
+      } else if (target.weapon_center != cv::Point(0, 0)) {
+        std::cout << "无 ITF  weapon=(" << target.weapon_center.x
+                  << "," << target.weapon_center.y << ")\n";
       }
 
       // 可视化
       if (showWindow) {
         cv::Mat display = frame.clone();
-        YoloOnnxDetector::drawDetections(display, allDets);
+        pipeline.drawTarget(display, target);
 
-        cv::drawMarker(display, imgCenter, cv::Scalar(0, 255, 0),
-                       cv::MARKER_CROSS, 20, 2);
-
-        if (centerWeapon) {
-          cv::drawMarker(display, centerWeapon->center(),
-                         cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 30, 2);
-        }
-        if (targetItf) {
-          cv::drawMarker(display, targetItf->center(),
-                         cv::Scalar(0, 0, 255), cv::MARKER_CROSS, 30, 2);
-          cv::line(display, imgCenter, targetItf->center(),
-                   cv::Scalar(0, 255, 255), 2);
-          float dist = static_cast<float>(
-              cv::norm(imgCenter - targetItf->center()));
-          cv::putText(display,
-                      "dist=" + std::to_string(static_cast<int>(dist)),
-                      cv::Point(imgCenter.x + 15, imgCenter.y - 15),
-                      cv::FONT_HERSHEY_SIMPLEX, 0.7,
-                      cv::Scalar(0, 255, 255), 2);
-        }
-
+        // FPS
         auto t1 = std::chrono::steady_clock::now();
         double elapsed =
             std::chrono::duration<double>(t1 - t0).count();
@@ -206,6 +196,13 @@ int main(int argc, char *argv[]) {
         if (cv::waitKey(1) == 27)
           break;
       }
+    }
+
+    serialConnector.reset();
+    workGuard.reset();
+    ioContext.stop();
+    if (ioThread.joinable()) {
+      ioThread.join();
     }
 
     cv::destroyAllWindows();

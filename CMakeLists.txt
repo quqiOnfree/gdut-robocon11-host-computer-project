@@ -25,6 +25,7 @@ target_include_directories(model_test PUBLIC
 target_link_libraries(model_test PUBLIC
   ${OpenCV_LIBS}
   onnxruntime::onnxruntime
+  asio
 )
 
 add_custom_command(TARGET model_test POST_BUILD
