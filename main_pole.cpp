@@ -22,30 +22,37 @@ cv::Mat frame_pole;
 
 cv::Point getContours(cv::Mat imgDil)
 {
-    std::vector<cv::Point> contours;
+    std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
 
     cv::findContours(imgDil,contours,hierarchy,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_SIMPLE);
 
-    std::vector<cv::Point> conPoly;
-    cv::Rect boundRect;
+    std::vector<std::vector<cv::Point>> conPoly(contours.size());
+    std::vector<cv::Rect> boundRect(contours.size());
     cv::Point pole_center(0,0);
 
-    int area = cv::contourArea(contours);
-    if (area > 500)
+    for (size_t i = 0; i < contours.size(); i++)
     {
-        float peri = cv::arcLength(contours, true);
-        cv::approxPolyDP(contours, conPoly, 0.02 * peri, true);
-        boundRect = cv::boundingRect(conPoly);
-        cv::rectangle(frame_pole, boundRect.tl(), boundRect.br(), cv::Scalar(0, 255, 0), 2);
-        pole_center.x = boundRect.x + boundRect.width / 2;
-        pole_center.y = boundRect.y + boundRect.height / 2;
+        int area = cv::contourArea(contours[i]);
+        if (area > 500)
+        {
+            float peri = cv::arcLength(contours[i], true);
+            cv::approxPolyDP(contours[i], conPoly[i], 0.02 * peri, true);
+            boundRect[i] = cv::boundingRect(conPoly[i]);
+            cv::rectangle(frame_pole, boundRect[i].tl(), boundRect[i].br(), cv::Scalar(0, 255, 0), 2);
+            pole_center.x = boundRect[i].x + boundRect[i].width / 2;
+            pole_center.y = boundRect[i].y + boundRect[i].height / 2;
+        }
     }
     return pole_center;
 }
 
 float getDistance(cv::Point pole_center)
 {
+    if(pole_center == cv::Point(0,0))
+    {
+        return 0.0f; // 没有检测到目标
+    }
     cv::Point frame_center(frame_pole.cols / 2, frame_pole.rows / 2);
     float distance = cv::norm(frame_center - pole_center);
     if(pole_center.x < frame_center.x)
@@ -57,6 +64,9 @@ float getDistance(cv::Point pole_center)
 
 void drawOnFrame(cv::Mat &frame, cv::Point pole_center)
 {
+    if (pole_center == cv::Point(0,0))
+        return;
+
     // 画面中心十字
     cv::drawMarker(frame_pole, pole_center, cv::Scalar(0, 255, 0), cv::MARKER_CROSS, 20, 2);
 
@@ -206,7 +216,9 @@ int main(int argc, char *argv[])
             }
 
             // 终端输出
-            std::cout << " Distance from pole_center to frame_center: " << distance << std::endl;
+            if (pole_pole_center_point != cv::Point(0,0)) {
+                std::cout << " Distance from pole_center to frame_center: " << distance << std::endl;
+            }
 
             // 可视化
             if (showWindow) {

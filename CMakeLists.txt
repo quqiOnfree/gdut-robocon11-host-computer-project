@@ -104,3 +104,38 @@ endif()
 target_compile_options(weapon_test PUBLIC
   "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>"
 )
+
+# ---- pole 检测程序 (纯 OpenCV，无 onnxruntime) ----
+add_executable(pole_test
+  ${INCLUDE_FILES}
+  main_pole.cpp)
+
+target_include_directories(pole_test PUBLIC
+  include/
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(pole_test PUBLIC
+  ${OpenCV_LIBS}
+  asio
+  $<$<BOOL:${WIN32}>:ws2_32>
+)
+
+if(EXISTS "${OPENCV_DLL_DEBUG}")
+  add_custom_command(TARGET pole_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OPENCV_DLL_DEBUG}"
+            $<TARGET_FILE_DIR:pole_test>
+  )
+endif()
+if(EXISTS "${OPENCV_DLL_RELEASE}")
+  add_custom_command(TARGET pole_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OPENCV_DLL_RELEASE}"
+            $<TARGET_FILE_DIR:pole_test>
+  )
+endif()
+
+target_compile_options(pole_test PUBLIC
+  "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>"
+)
