@@ -139,3 +139,19 @@ endif()
 target_compile_options(pole_test PUBLIC
   "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>"
 )
+
+add_executable(path_planning_test
+  ${INCLUDE_FILES}
+  path_planning_test.cpp)
+target_include_directories(path_planning_test PUBLIC
+  include/
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(path_planning_test PUBLIC
+  ${OpenCV_LIBS}
+  onnxruntime::onnxruntime
+  asio
+)
+target_compile_options(path_planning_test PUBLIC
+  "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>"
+)
