@@ -4,6 +4,7 @@
 #include <iostream>
 #include <fstream>
 #include <unordered_set>
+#include <chrono>
 
 path_planning planner;
 std::size_t test_count = 0;
@@ -43,6 +44,7 @@ struct hash {
 };
 
 int main() {
+  auto start_time = std::chrono::steady_clock::now();
   std::streambuf* cout_buf = std::cout.rdbuf();
   std::cout.rdbuf(fp ? fp.rdbuf() : cout_buf); // Redirect std::cout to file if opened successfully
 
@@ -154,4 +156,9 @@ int main() {
       path.pop();
     }
   }
+
+  auto end_time = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+  std::cout << "Total tests run: " << test_count << "\n";
+  std::cout << "Total time taken: " << elapsed_seconds.count() << " seconds\n";
 }
