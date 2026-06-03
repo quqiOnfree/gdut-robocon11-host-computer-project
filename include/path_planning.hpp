@@ -7,7 +7,6 @@
 #include <queue>
 #include <stdexcept>
 
-
 class path_planning {
 public:
   inline static constexpr std::size_t map_width = 3;
@@ -33,7 +32,8 @@ public:
     move_backward,
     turn_right,
     wait_r1,
-    grab_r2_kfs
+    grab_lower_r2_kfs,
+    grab_higher_r2_kfs
   };
 
   template <typename T,
@@ -391,26 +391,47 @@ protected:
       std::optional<point> down = get_dir_pos(direction::down);
       std::optional<point> right = get_dir_pos(direction::right);
 
+      auto gen_grab_command = [&]() {
+        if (current_level == map_level::ground) {
+          commands.push(command::grab_higher_r2_kfs);
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::grab_higher_r2_kfs);
+          } else {
+            commands.push(command::grab_lower_r2_kfs);
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::grab_higher_r2_kfs);
+          } else {
+            commands.push(command::grab_lower_r2_kfs);
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::grab_lower_r2_kfs);
+        }
+      };
+
       if (up.has_value() && get_kfs(up.value()) == kfs_type::r2kfs) {
-        commands.push(command::grab_r2_kfs);
+        gen_grab_command();
         local_map[up.value().x][up.value().y] = kfs_type::empty;
       }
       if (left.has_value() && get_kfs(left.value()) == kfs_type::r2kfs) {
         commands.push(command::turn_left);
-        commands.push(command::grab_r2_kfs);
+        gen_grab_command();
         commands.push(command::turn_right);
         local_map[left.value().x][left.value().y] = kfs_type::empty;
       }
       if (right.has_value() && get_kfs(right.value()) == kfs_type::r2kfs) {
         commands.push(command::turn_right);
-        commands.push(command::grab_r2_kfs);
+        gen_grab_command();
         commands.push(command::turn_left);
         local_map[right.value().x][right.value().y] = kfs_type::empty;
       }
       if (down.has_value() && get_kfs(down.value()) == kfs_type::r2kfs) {
         commands.push(command::turn_right);
         commands.push(command::turn_right);
-        commands.push(command::grab_r2_kfs);
+        gen_grab_command();
         commands.push(command::turn_right);
         commands.push(command::turn_right);
         local_map[down.value().x][down.value().y] = kfs_type::empty;
