@@ -6,7 +6,6 @@
 #include <queue>
 #include <stdexcept>
 
-
 class path_planning {
 public:
   inline static constexpr std::size_t map_width = 3;
@@ -18,6 +17,48 @@ public:
     int x;
     int y;
   };
+
+  struct path_node {
+    point p;
+    kfs_type type;
+  };
+
+  enum class direction { up, left, down, right };
+
+  enum class command {
+    move_forward,
+    turn_left,
+    move_backward,
+    turn_right,
+    wait_r1,
+    grab_r2_kfs
+  };
+
+  template <typename T,
+            typename = std::enable_if_t<std::is_integral_v<std::decay_t<T>>>>
+  friend direction operator+(direction c, T n) {
+    return static_cast<direction>(((static_cast<int>(c) + n) % 4 + 4) % 4);
+  }
+
+  template <typename T,
+            typename = std::enable_if_t<std::is_integral_v<std::decay_t<T>>>>
+  friend direction operator+(T n, direction c) {
+    return static_cast<direction>(((static_cast<int>(c) + n) % 4 + 4) % 4);
+  }
+
+  template <typename T,
+            typename = std::enable_if_t<std::is_integral_v<std::decay_t<T>>>>
+  friend direction operator-(direction c, T n) {
+    return static_cast<direction>(((static_cast<int>(c) - n) % 4 + 4) % 4);
+  }
+
+  template <typename T,
+            typename = std::enable_if_t<std::is_integral_v<std::decay_t<T>>>>
+  friend direction operator-(T n, direction c) {
+    return static_cast<direction>(((static_cast<int>(c) - n) % 4 + 4) % 4);
+  }
+
+  enum class map_level { ground, low, medium, high };
 
   path_planning() = default;
   ~path_planning() = default;
@@ -36,11 +77,286 @@ public:
     return m_map[p.x][p.y];
   }
 
-  struct path_node {
-    point p;
-    kfs_type type;
-  };
+  std::queue<path_node> find_path() const {
+    point start{1, 0};
+    point end1{0, 5};
+    point end2{2, 5};
 
+    auto path1 = a_star(start, end1);
+    auto path2 = a_star(start, end2);
+    a_star_queue_t a_star_result{&pool_resource};
+    std::queue<path_node> result;
+    if (path1.empty() && path2.empty()) {
+      return result; // No path found
+    } else if (path1.empty()) {
+      a_star_result = std::move(path2);
+    } else if (path2.empty()) {
+      a_star_result = std::move(path1);
+    } else {
+      if (path1.back().f_cost() <= path2.back().f_cost()) {
+        a_star_result = std::move(path1);
+      } else {
+        a_star_result = std::move(path2);
+      }
+    }
+
+    while (!a_star_result.empty()) {
+      a_star_node node = std::move(a_star_result.front());
+      result.push({node.p, node.type});
+      a_star_result.pop();
+    }
+    return result;
+  }
+
+  // template<typename T, typename =
+  // std::enable_if_t<std::is_same_v<std::decay_t<T>, std::queue<path_node>>>>
+  std::queue<command> generate_commands(
+      std::queue<path_node> ipath,
+      std::array<std::array<map_level, map_height>, map_width> map,
+      direction initial_direction) const {
+    // initilize map
+    map[0][0] = map_level::ground;
+    map[1][0] = map_level::ground;
+    map[2][0] = map_level::ground;
+    map[0][map_height - 1] = map_level::ground;
+    map[1][map_height - 1] = map_level::ground;
+    map[2][map_height - 1] = map_level::ground;
+
+    std::queue<command> commands;
+    std::queue<path_node> path{std::forward<std::queue<path_node>>(ipath)};
+    if (path.empty()) {
+      return commands; // No path, no commands
+    }
+    const path_node initial_node = std::move(path.front());
+    path.pop();
+    path_node current_node = initial_node;
+
+    struct point_with_direction {
+      point p;
+      direction d;
+    };
+
+    std::queue<point_with_direction,
+               std::deque<point_with_direction, std::pmr::polymorphic_allocator<
+                                                    point_with_direction>>>
+        directions{&pool_resource};
+
+    while (!path.empty()) {
+      auto node = std::move(path.front());
+      path.pop();
+      point next_point = node.p;
+      if (next_point.x == current_node.p.x) {
+        if (next_point.y == current_node.p.y + 1) {
+          directions.push({next_point, direction::up});
+        } else if (next_point.y == current_node.p.y - 1) {
+          directions.push({next_point, direction::down});
+        }
+      } else if (next_point.y == current_node.p.y) {
+        if (next_point.x == current_node.p.x + 1) {
+          directions.push({next_point, direction::right});
+        } else if (next_point.x == current_node.p.x - 1) {
+          directions.push({next_point, direction::left});
+        }
+      }
+      current_node = std::move(node);
+    }
+
+    point_with_direction current = {initial_node.p, initial_direction};
+
+    while (!directions.empty()) {
+      point_with_direction next = directions.front();
+      point current_point = current.p;
+      point next_point = next.p;
+      direction current_direction = current.d;
+      direction next_direction = next.d;
+      directions.pop();
+      // move forward to level up, move backward to level down
+      const map_level current_level = map[current_point.x][current_point.y];
+      const map_level next_level = map[next_point.x][next_point.y];
+
+      auto get_kfs = [&](direction dire) {
+        point adjacent_point = current_point;
+        switch (dire) {
+        case direction::up:
+          adjacent_point.y += 1;
+          break;
+        case direction::down:
+          adjacent_point.y -= 1;
+          break;
+        case direction::left:
+          adjacent_point.x -= 1;
+          break;
+        case direction::right:
+          adjacent_point.x += 1;
+          break;
+        }
+        if (adjacent_point.x < 0 || adjacent_point.x >= map_width ||
+            adjacent_point.y < 0 || adjacent_point.y >= map_height) {
+          return kfs_type::empty;
+        }
+        return get_kfs_type(adjacent_point);
+      };
+
+      kfs_type up_kfs = get_kfs(current_direction);
+      kfs_type left_kfs = get_kfs(current_direction + 1);
+      kfs_type down_kfs = get_kfs(current_direction - 2);
+      kfs_type right_kfs = get_kfs(current_direction - 1);
+
+      if (up_kfs == kfs_type::r1kfs) {
+        commands.push(command::wait_r1);
+      } else if (up_kfs == kfs_type::r2kfs) {
+        commands.push(command::grab_r2_kfs);
+      }
+      if (left_kfs == kfs_type::r2kfs) {
+        commands.push(command::turn_left);
+        commands.push(command::grab_r2_kfs);
+        commands.push(command::turn_right);
+      }
+      if (right_kfs == kfs_type::r2kfs) {
+        commands.push(command::turn_right);
+        commands.push(command::grab_r2_kfs);
+        commands.push(command::turn_left);
+      }
+      if (down_kfs == kfs_type::r2kfs) {
+        commands.push(command::turn_right);
+        commands.push(command::turn_right);
+        commands.push(command::grab_r2_kfs);
+        commands.push(command::turn_right);
+        commands.push(command::turn_right);
+      }
+
+      if (current_direction == next_direction) {
+        if (current_level == map_level::ground) {
+          commands.push(command::move_forward);
+          current = {next_point, current_direction};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::move_forward);
+            current = {next_point, current_direction};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 2)};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::move_forward);
+            current = {next_point, current_direction};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 2)};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::turn_right);
+          commands.push(command::turn_right);
+          commands.push(command::move_backward);
+          current = {next_point, (current_direction - 2)};
+        }
+      } else if (current_direction - 1 == next_direction) {
+        if (current_level == map_level::ground) {
+          commands.push(command::turn_right);
+          commands.push(command::move_forward);
+          current = {next_point, (current_direction - 1)};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 1)};
+          } else {
+            commands.push(command::turn_left);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction + 1)};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 1)};
+          } else {
+            commands.push(command::turn_left);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction + 1)};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::turn_left);
+          commands.push(command::move_backward);
+          current = {next_point, (current_direction + 1)};
+        }
+      } else if (current_direction + 1 == next_direction) {
+        if (current_level == map_level::ground) {
+          commands.push(command::turn_left);
+          commands.push(command::move_forward);
+          current = {next_point, (current_direction + 1)};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::turn_left);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction + 1)};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 1)};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::turn_left);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction + 1)};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 1)};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::turn_right);
+          commands.push(command::move_backward);
+          current = {next_point, (current_direction - 1)};
+        }
+      } else {
+        // 180 degree turn
+        if (current_level == map_level::ground) {
+          commands.push(command::turn_right);
+          commands.push(command::turn_right);
+          commands.push(command::move_forward);
+          current = {next_point, (current_direction - 2)};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 2)};
+          } else {
+            commands.push(command::move_backward);
+            current = {next_point, current_direction};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 2)};
+          } else {
+            commands.push(command::move_backward);
+            current = {next_point, current_direction};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::move_backward);
+          current = {next_point, current_direction};
+        }
+      }
+    }
+
+    return commands;
+  }
+
+protected:
   struct a_star_node {
     point p;
     kfs_type type;
@@ -51,47 +367,27 @@ public:
     std::size_t f_cost() const { return g_cost + h_cost; } // Total cost
   };
 
-  std::queue<a_star_node> find_path(const point &start,
-                                    const point &end) const {
-    std::queue<a_star_node> result;
-    auto path = a_star(start, end);
-    if (path.empty()) {
-      return {};
-    }
+  using a_star_queue_t = std::queue<
+      a_star_node,
+      std::deque<a_star_node, std::pmr::polymorphic_allocator<a_star_node>>>;
 
-    while (!path.empty()) {
-      result.push(std::move(path.front()));
-      path.pop();
-    }
-    return result;
-  }
-
-protected:
   static std::size_t get_manhattan_distance(const point &a, const point &b) {
     return std::abs(a.x - b.x) + std::abs(a.y - b.y);
   }
 
   struct compare_a_star_node {
-    using queue_t = std::queue<
-        a_star_node,
-        std::deque<a_star_node, std::pmr::polymorphic_allocator<a_star_node>>>;
-    bool operator()(const queue_t &a, const queue_t &b) const {
+    bool operator()(const a_star_queue_t &a, const a_star_queue_t &b) const {
       return a.back().f_cost() > b.back().f_cost();
     }
   };
 
-  std::queue<
-      a_star_node,
-      std::deque<a_star_node, std::pmr::polymorphic_allocator<a_star_node>>>
-  a_star(const point &start, const point &end) const {
-    using queue_t = std::queue<
-        a_star_node,
-        std::deque<a_star_node, std::pmr::polymorphic_allocator<a_star_node>>>;
-    std::priority_queue<queue_t, std::pmr::vector<queue_t>, compare_a_star_node>
+  a_star_queue_t a_star(const point &start, const point &end) const {
+    std::priority_queue<a_star_queue_t, std::pmr::vector<a_star_queue_t>,
+                        compare_a_star_node>
         path{compare_a_star_node{}, &pool_resource};
     {
       // 初始化路径
-      queue_t initial_path{&pool_resource};
+      a_star_queue_t initial_path{&pool_resource};
       a_star_node start_node{start, get_kfs_type(start), 0,
                              get_manhattan_distance(start, end)};
       start_node.walked[start.x][start.y] = true;
@@ -100,7 +396,7 @@ protected:
     }
 
     while (!path.empty()) {
-      queue_t current_path{&pool_resource};
+      a_star_queue_t current_path{&pool_resource};
       current_path = path.top();
       path.pop();
       const a_star_node current_node = current_path.back();
@@ -153,7 +449,7 @@ protected:
                   (next_type == kfs_type::r1kfs ? 1 : 0),
               get_manhattan_distance(next_point, end), current_node.walked};
           next_node.walked[next_point.x][next_point.y] = true;
-          queue_t new_path{&pool_resource};
+          a_star_queue_t new_path{&pool_resource};
           new_path = current_path;
           new_path.push(next_node);
           path.push(std::move(new_path));
