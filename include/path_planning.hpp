@@ -3,8 +3,10 @@
 #include <array>
 #include <deque>
 #include <memory_resource>
+#include <optional>
 #include <queue>
 #include <stdexcept>
+
 
 class path_planning {
 public:
@@ -108,252 +110,47 @@ public:
     return result;
   }
 
-  // template<typename T, typename =
-  // std::enable_if_t<std::is_same_v<std::decay_t<T>, std::queue<path_node>>>>
   std::queue<command> generate_commands(
       std::queue<path_node> ipath,
-      std::array<std::array<map_level, map_height>, map_width> map,
+      const std::array<std::array<map_level, map_height>, map_width> &map,
       direction initial_direction) const {
-    // initilize map
-    map[0][0] = map_level::ground;
-    map[1][0] = map_level::ground;
-    map[2][0] = map_level::ground;
-    map[0][map_height - 1] = map_level::ground;
-    map[1][map_height - 1] = map_level::ground;
-    map[2][map_height - 1] = map_level::ground;
-
-    std::queue<command> commands;
-    std::queue<path_node> path{std::forward<std::queue<path_node>>(ipath)};
-    if (path.empty()) {
-      return commands; // No path, no commands
-    }
-    const path_node initial_node = std::move(path.front());
-    path.pop();
-    path_node current_node = initial_node;
-
-    struct point_with_direction {
-      point p;
-      direction d;
-    };
-
-    std::queue<point_with_direction,
-               std::deque<point_with_direction, std::pmr::polymorphic_allocator<
-                                                    point_with_direction>>>
-        directions{&pool_resource};
-
-    while (!path.empty()) {
-      auto node = std::move(path.front());
-      path.pop();
-      point next_point = node.p;
-      if (next_point.x == current_node.p.x) {
-        if (next_point.y == current_node.p.y + 1) {
-          directions.push({next_point, direction::up});
-        } else if (next_point.y == current_node.p.y - 1) {
-          directions.push({next_point, direction::down});
-        }
-      } else if (next_point.y == current_node.p.y) {
-        if (next_point.x == current_node.p.x + 1) {
-          directions.push({next_point, direction::right});
-        } else if (next_point.x == current_node.p.x - 1) {
-          directions.push({next_point, direction::left});
-        }
-      }
-      current_node = std::move(node);
-    }
-
-    point_with_direction current = {initial_node.p, initial_direction};
-
-    while (!directions.empty()) {
-      point_with_direction next = directions.front();
-      point current_point = current.p;
-      point next_point = next.p;
-      direction current_direction = current.d;
-      direction next_direction = next.d;
-      directions.pop();
-      // move forward to level up, move backward to level down
-      const map_level current_level = map[current_point.x][current_point.y];
-      const map_level next_level = map[next_point.x][next_point.y];
-
-      auto get_kfs = [&](direction dire) {
-        point adjacent_point = current_point;
-        switch (dire) {
-        case direction::up:
-          adjacent_point.y += 1;
+    auto original_commands =
+        generate_original_commands(std::move(ipath), map, initial_direction);
+    std::queue<command> optimized_commands;
+    int turn_count = 0;
+    while (!original_commands.empty()) {
+      command cmd = original_commands.front();
+      original_commands.pop();
+      switch (cmd) {
+      case command::turn_left:
+        turn_count += 1;
+        break;
+      case command::turn_right:
+        turn_count -= 1;
+        break;
+      case command::wait_r1:
+        optimized_commands.push(cmd);
+        break;
+      default:
+        switch ((turn_count % 4 + 4) % 4) {
+        case 0:
           break;
-        case direction::down:
-          adjacent_point.y -= 1;
+        case 1:
+          optimized_commands.push(command::turn_left);
           break;
-        case direction::left:
-          adjacent_point.x -= 1;
+        case 2:
+          optimized_commands.push(command::turn_right);
+          optimized_commands.push(command::turn_right);
           break;
-        case direction::right:
-          adjacent_point.x += 1;
+        case 3:
+          optimized_commands.push(command::turn_right);
           break;
-        }
-        if (adjacent_point.x < 0 || adjacent_point.x >= map_width ||
-            adjacent_point.y < 0 || adjacent_point.y >= map_height) {
-          return kfs_type::empty;
-        }
-        return get_kfs_type(adjacent_point);
+        };
+        turn_count = 0;
+        optimized_commands.push(cmd);
       };
-
-      kfs_type up_kfs = get_kfs(current_direction);
-      kfs_type left_kfs = get_kfs(current_direction + 1);
-      kfs_type down_kfs = get_kfs(current_direction - 2);
-      kfs_type right_kfs = get_kfs(current_direction - 1);
-
-      if (up_kfs == kfs_type::r1kfs) {
-        commands.push(command::wait_r1);
-      } else if (up_kfs == kfs_type::r2kfs) {
-        commands.push(command::grab_r2_kfs);
-      }
-      if (left_kfs == kfs_type::r2kfs) {
-        commands.push(command::turn_left);
-        commands.push(command::grab_r2_kfs);
-        commands.push(command::turn_right);
-      }
-      if (right_kfs == kfs_type::r2kfs) {
-        commands.push(command::turn_right);
-        commands.push(command::grab_r2_kfs);
-        commands.push(command::turn_left);
-      }
-      if (down_kfs == kfs_type::r2kfs) {
-        commands.push(command::turn_right);
-        commands.push(command::turn_right);
-        commands.push(command::grab_r2_kfs);
-        commands.push(command::turn_right);
-        commands.push(command::turn_right);
-      }
-
-      if (current_direction == next_direction) {
-        if (current_level == map_level::ground) {
-          commands.push(command::move_forward);
-          current = {next_point, current_direction};
-        } else if (current_level == map_level::low) {
-          if (next_level == map_level::medium ||
-              next_level == map_level::high) {
-            commands.push(command::move_forward);
-            current = {next_point, current_direction};
-          } else {
-            commands.push(command::turn_right);
-            commands.push(command::turn_right);
-            commands.push(command::move_backward);
-            current = {next_point, (current_direction - 2)};
-          }
-        } else if (current_level == map_level::medium) {
-          if (next_level == map_level::high) {
-            commands.push(command::move_forward);
-            current = {next_point, current_direction};
-          } else {
-            commands.push(command::turn_right);
-            commands.push(command::turn_right);
-            commands.push(command::move_backward);
-            current = {next_point, (current_direction - 2)};
-          }
-        } else if (current_level == map_level::high) {
-          commands.push(command::turn_right);
-          commands.push(command::turn_right);
-          commands.push(command::move_backward);
-          current = {next_point, (current_direction - 2)};
-        }
-      } else if (current_direction - 1 == next_direction) {
-        if (current_level == map_level::ground) {
-          commands.push(command::turn_right);
-          commands.push(command::move_forward);
-          current = {next_point, (current_direction - 1)};
-        } else if (current_level == map_level::low) {
-          if (next_level == map_level::medium ||
-              next_level == map_level::high) {
-            commands.push(command::turn_right);
-            commands.push(command::move_forward);
-            current = {next_point, (current_direction - 1)};
-          } else {
-            commands.push(command::turn_left);
-            commands.push(command::move_backward);
-            current = {next_point, (current_direction + 1)};
-          }
-        } else if (current_level == map_level::medium) {
-          if (next_level == map_level::high) {
-            commands.push(command::turn_right);
-            commands.push(command::move_forward);
-            current = {next_point, (current_direction - 1)};
-          } else {
-            commands.push(command::turn_left);
-            commands.push(command::move_backward);
-            current = {next_point, (current_direction + 1)};
-          }
-        } else if (current_level == map_level::high) {
-          commands.push(command::turn_left);
-          commands.push(command::move_backward);
-          current = {next_point, (current_direction + 1)};
-        }
-      } else if (current_direction + 1 == next_direction) {
-        if (current_level == map_level::ground) {
-          commands.push(command::turn_left);
-          commands.push(command::move_forward);
-          current = {next_point, (current_direction + 1)};
-        } else if (current_level == map_level::low) {
-          if (next_level == map_level::medium ||
-              next_level == map_level::high) {
-            commands.push(command::turn_left);
-            commands.push(command::move_forward);
-            current = {next_point, (current_direction + 1)};
-          } else {
-            commands.push(command::turn_right);
-            commands.push(command::move_backward);
-            current = {next_point, (current_direction - 1)};
-          }
-        } else if (current_level == map_level::medium) {
-          if (next_level == map_level::high) {
-            commands.push(command::turn_left);
-            commands.push(command::move_forward);
-            current = {next_point, (current_direction + 1)};
-          } else {
-            commands.push(command::turn_right);
-            commands.push(command::move_backward);
-            current = {next_point, (current_direction - 1)};
-          }
-        } else if (current_level == map_level::high) {
-          commands.push(command::turn_right);
-          commands.push(command::move_backward);
-          current = {next_point, (current_direction - 1)};
-        }
-      } else {
-        // 180 degree turn
-        if (current_level == map_level::ground) {
-          commands.push(command::turn_right);
-          commands.push(command::turn_right);
-          commands.push(command::move_forward);
-          current = {next_point, (current_direction - 2)};
-        } else if (current_level == map_level::low) {
-          if (next_level == map_level::medium ||
-              next_level == map_level::high) {
-            commands.push(command::turn_right);
-            commands.push(command::turn_right);
-            commands.push(command::move_forward);
-            current = {next_point, (current_direction - 2)};
-          } else {
-            commands.push(command::move_backward);
-            current = {next_point, current_direction};
-          }
-        } else if (current_level == map_level::medium) {
-          if (next_level == map_level::high) {
-            commands.push(command::turn_right);
-            commands.push(command::turn_right);
-            commands.push(command::move_forward);
-            current = {next_point, (current_direction - 2)};
-          } else {
-            commands.push(command::move_backward);
-            current = {next_point, current_direction};
-          }
-        } else if (current_level == map_level::high) {
-          commands.push(command::move_backward);
-          current = {next_point, current_direction};
-        }
-      }
     }
-
-    return commands;
+    return optimized_commands;
   }
 
 protected:
@@ -488,6 +285,266 @@ protected:
       }
     }
     return {};
+  }
+
+  // template<typename T, typename =
+  // std::enable_if_t<std::is_same_v<std::decay_t<T>, std::queue<path_node>>>>
+  std::queue<command> generate_original_commands(
+      std::queue<path_node> ipath,
+      std::array<std::array<map_level, map_height>, map_width> map,
+      direction initial_direction) const {
+    // initilize map
+    map[0][0] = map_level::ground;
+    map[1][0] = map_level::ground;
+    map[2][0] = map_level::ground;
+    map[0][map_height - 1] = map_level::ground;
+    map[1][map_height - 1] = map_level::ground;
+    map[2][map_height - 1] = map_level::ground;
+
+    std::queue<command> commands;
+    std::queue<path_node> path{std::forward<std::queue<path_node>>(ipath)};
+    if (path.empty()) {
+      return commands; // No path, no commands
+    }
+    const path_node initial_node = std::move(path.front());
+    path.pop();
+    path_node current_node = initial_node;
+
+    struct point_with_direction {
+      point p;
+      direction d;
+    };
+
+    std::queue<point_with_direction,
+               std::deque<point_with_direction, std::pmr::polymorphic_allocator<
+                                                    point_with_direction>>>
+        directions{&pool_resource};
+
+    while (!path.empty()) {
+      auto node = std::move(path.front());
+      path.pop();
+      point next_point = node.p;
+      if (next_point.x == current_node.p.x) {
+        if (next_point.y == current_node.p.y + 1) {
+          directions.push({next_point, direction::up});
+        } else if (next_point.y == current_node.p.y - 1) {
+          directions.push({next_point, direction::down});
+        }
+      } else if (next_point.y == current_node.p.y) {
+        if (next_point.x == current_node.p.x + 1) {
+          directions.push({next_point, direction::right});
+        } else if (next_point.x == current_node.p.x - 1) {
+          directions.push({next_point, direction::left});
+        }
+      }
+      current_node = std::move(node);
+    }
+
+    point_with_direction current = {initial_node.p, initial_direction};
+    auto local_map = m_map;
+
+    while (!directions.empty()) {
+      point_with_direction next = directions.front();
+      point current_point = current.p;
+      point next_point = next.p;
+      direction current_direction = current.d;
+      direction next_direction = next.d;
+      directions.pop();
+      // move forward to level up, move backward to level down
+      const map_level current_level = map[current_point.x][current_point.y];
+      const map_level next_level = map[next_point.x][next_point.y];
+
+      auto get_dir_pos = [&](direction dire) -> std::optional<point> {
+        point adjacent_point = current_point;
+        switch (dire) {
+        case direction::up:
+          adjacent_point.y += 1;
+          break;
+        case direction::down:
+          adjacent_point.y -= 1;
+          break;
+        case direction::left:
+          adjacent_point.x -= 1;
+          break;
+        case direction::right:
+          adjacent_point.x += 1;
+          break;
+        }
+        if (adjacent_point.x < 0 || adjacent_point.x >= map_width ||
+            adjacent_point.y < 0 || adjacent_point.y >= map_height) {
+          return std::nullopt; // Out of bounds
+        }
+        return adjacent_point;
+      };
+
+      auto get_kfs = [&](point p) {
+        point adjacent_point = p;
+        if (adjacent_point.x < 0 || adjacent_point.x >= map_width ||
+            adjacent_point.y < 0 || adjacent_point.y >= map_height) {
+          return kfs_type::empty;
+        }
+        return local_map[p.x][p.y];
+      };
+
+      std::optional<point> up = get_dir_pos(direction::up);
+      std::optional<point> left = get_dir_pos(direction::left);
+      std::optional<point> down = get_dir_pos(direction::down);
+      std::optional<point> right = get_dir_pos(direction::right);
+
+      if (up.has_value() && get_kfs(up.value()) == kfs_type::r2kfs) {
+        commands.push(command::grab_r2_kfs);
+        local_map[up.value().x][up.value().y] = kfs_type::empty;
+      }
+      if (left.has_value() && get_kfs(left.value()) == kfs_type::r2kfs) {
+        commands.push(command::turn_left);
+        commands.push(command::grab_r2_kfs);
+        commands.push(command::turn_right);
+        local_map[left.value().x][left.value().y] = kfs_type::empty;
+      }
+      if (right.has_value() && get_kfs(right.value()) == kfs_type::r2kfs) {
+        commands.push(command::turn_right);
+        commands.push(command::grab_r2_kfs);
+        commands.push(command::turn_left);
+        local_map[right.value().x][right.value().y] = kfs_type::empty;
+      }
+      if (down.has_value() && get_kfs(down.value()) == kfs_type::r2kfs) {
+        commands.push(command::turn_right);
+        commands.push(command::turn_right);
+        commands.push(command::grab_r2_kfs);
+        commands.push(command::turn_right);
+        commands.push(command::turn_right);
+        local_map[down.value().x][down.value().y] = kfs_type::empty;
+      }
+
+      if (current_direction == next_direction) {
+        if (current_level == map_level::ground) {
+          commands.push(command::move_forward);
+          current = {next_point, current_direction};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::move_forward);
+            current = {next_point, current_direction};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 2)};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::move_forward);
+            current = {next_point, current_direction};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 2)};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::turn_right);
+          commands.push(command::turn_right);
+          commands.push(command::move_backward);
+          current = {next_point, (current_direction - 2)};
+        }
+      } else if (current_direction - 1 == next_direction) {
+        if (current_level == map_level::ground) {
+          commands.push(command::turn_right);
+          commands.push(command::move_forward);
+          current = {next_point, (current_direction - 1)};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 1)};
+          } else {
+            commands.push(command::turn_left);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction + 1)};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 1)};
+          } else {
+            commands.push(command::turn_left);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction + 1)};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::turn_left);
+          commands.push(command::move_backward);
+          current = {next_point, (current_direction + 1)};
+        }
+      } else if (current_direction + 1 == next_direction) {
+        if (current_level == map_level::ground) {
+          commands.push(command::turn_left);
+          commands.push(command::move_forward);
+          current = {next_point, (current_direction + 1)};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::turn_left);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction + 1)};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 1)};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::turn_left);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction + 1)};
+          } else {
+            commands.push(command::turn_right);
+            commands.push(command::move_backward);
+            current = {next_point, (current_direction - 1)};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::turn_right);
+          commands.push(command::move_backward);
+          current = {next_point, (current_direction - 1)};
+        }
+      } else {
+        // 180 degree turn
+        if (current_level == map_level::ground) {
+          commands.push(command::turn_right);
+          commands.push(command::turn_right);
+          commands.push(command::move_forward);
+          current = {next_point, (current_direction - 2)};
+        } else if (current_level == map_level::low) {
+          if (next_level == map_level::medium ||
+              next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 2)};
+          } else {
+            commands.push(command::move_backward);
+            current = {next_point, current_direction};
+          }
+        } else if (current_level == map_level::medium) {
+          if (next_level == map_level::high) {
+            commands.push(command::turn_right);
+            commands.push(command::turn_right);
+            commands.push(command::move_forward);
+            current = {next_point, (current_direction - 2)};
+          } else {
+            commands.push(command::move_backward);
+            current = {next_point, current_direction};
+          }
+        } else if (current_level == map_level::high) {
+          commands.push(command::move_backward);
+          current = {next_point, current_direction};
+        }
+      }
+    }
+
+    return commands;
   }
 
 private:
