@@ -211,9 +211,6 @@ int main() {
       case path_planning::command::turn_right:
         std::cout << "Turn Right\n";
         break;
-      case path_planning::command::wait_r1:
-        std::cout << "Wait R1 to grab R1 KFS\n";
-        break;
       case path_planning::command::grab_lower_r2_kfs:
         std::cout << "Grab Lower R2 KFS\n";
         break;

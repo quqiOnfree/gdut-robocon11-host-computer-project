@@ -5,12 +5,14 @@
 #include <memory_resource>
 #include <optional>
 #include <queue>
+#include <set>
 #include <stdexcept>
 
 class path_planning {
 public:
   inline static constexpr std::size_t map_width = 3;
   inline static constexpr std::size_t map_height = 6;
+  inline static constexpr std::size_t max_r2kfs_can_be_grabed = 3;
 
   enum class kfs_type { empty = 0, r1kfs, r2kfs, falsekfs };
 
@@ -31,9 +33,11 @@ public:
     turn_left,
     move_backward,
     turn_right,
-    wait_r1,
+    move_left,
+    move_right,
     grab_lower_r2_kfs,
-    grab_higher_r2_kfs
+    grab_higher_r2_kfs,
+    grab_highest_r2_kfs
   };
 
   template <typename T,
@@ -127,9 +131,6 @@ public:
         break;
       case command::turn_right:
         turn_count -= 1;
-        break;
-      case command::wait_r1:
-        optimized_commands.push(cmd);
         break;
       default:
         switch ((turn_count % 4 + 4) % 4) {
@@ -243,7 +244,22 @@ protected:
           a_star_node next_node{
               next_point, next_type,
               current_node.g_cost + 1 + (r2kfs_count > 0 ? 0 : 1) +
-                  (next_type == kfs_type::r1kfs ? 1 : 0),
+                  (next_type == kfs_type::r1kfs ? 1 : 0) + [&]() -> int {
+                std::size_t r2kfs_count = 0;
+                for (int i = 0; i < map_width; ++i) {
+                  for (int j = 0; j < map_height; ++j) {
+                    if (current_node.walked[i][j] &&
+                        get_kfs_type({i, j}) == kfs_type::r2kfs) {
+                      ++r2kfs_count;
+                      if (r2kfs_count > 3) {
+                        return 1; // If there's at least one r2kfs in the path,
+                                  // no extra cost for r1kfs
+                      }
+                    }
+                  }
+                }
+                return 0;
+              }(),
               get_manhattan_distance(next_point, end), current_node.walked};
           next_node.walked[next_point.x][next_point.y] = true;
           a_star_queue_t new_path{&pool_resource};
@@ -315,15 +331,30 @@ protected:
       direction d;
     };
 
+    struct point_compare {
+      bool operator()(const point &a, const point &b) const {
+        return std::tie(a.x, a.y) < std::tie(b.x, b.y);
+      }
+    };
+
     std::queue<point_with_direction,
                std::deque<point_with_direction, std::pmr::polymorphic_allocator<
                                                     point_with_direction>>>
         directions{&pool_resource};
+    std::set<point, point_compare, std::pmr::polymorphic_allocator<point>>
+        must_be_walked_points{&pool_resource};
+    std::size_t r2kfs_must_be_grabed = 0;
+    auto local_map = m_map;
 
     while (!path.empty()) {
       auto node = std::move(path.front());
       path.pop();
       point next_point = node.p;
+      must_be_walked_points.insert(next_point);
+
+      if (get_kfs_type(next_point) == kfs_type::r2kfs) {
+        ++r2kfs_must_be_grabed;
+      }
       if (next_point.x == current_node.p.x) {
         if (next_point.y == current_node.p.y + 1) {
           directions.push({next_point, direction::up});
@@ -341,7 +372,8 @@ protected:
     }
 
     point_with_direction current = {initial_node.p, initial_direction};
-    auto local_map = m_map;
+    local_map = m_map;
+    std::size_t ext_r2kfs_count = 0;
 
     while (!directions.empty()) {
       point_with_direction next = directions.front();
@@ -356,18 +388,70 @@ protected:
 
       auto get_dir_pos = [&](direction dire) -> std::optional<point> {
         point adjacent_point = current_point;
-        switch (dire) {
+        switch (current_direction) {
         case direction::up:
-          adjacent_point.y += 1;
+          switch (dire) {
+          case direction::up:
+            adjacent_point.y += 1;
+            break;
+          case direction::down:
+            adjacent_point.y -= 1;
+            break;
+          case direction::left:
+            adjacent_point.x -= 1;
+            break;
+          case direction::right:
+            adjacent_point.x += 1;
+            break;
+          };
           break;
         case direction::down:
-          adjacent_point.y -= 1;
+          switch (dire) {
+          case direction::up:
+            adjacent_point.y -= 1;
+            break;
+          case direction::down:
+            adjacent_point.y += 1;
+            break;
+          case direction::left:
+            adjacent_point.x += 1;
+            break;
+          case direction::right:
+            adjacent_point.x -= 1;
+            break;
+          };
           break;
         case direction::left:
-          adjacent_point.x -= 1;
+          switch (dire) {
+          case direction::up:
+            adjacent_point.x -= 1;
+            break;
+          case direction::down:
+            adjacent_point.x += 1;
+            break;
+          case direction::left:
+            adjacent_point.y -= 1;
+            break;
+          case direction::right:
+            adjacent_point.y += 1;
+            break;
+          };
           break;
         case direction::right:
-          adjacent_point.x += 1;
+          switch (dire) {
+          case direction::up:
+            adjacent_point.x += 1;
+            break;
+          case direction::down:
+            adjacent_point.x -= 1;
+            break;
+          case direction::left:
+            adjacent_point.y += 1;
+            break;
+          case direction::right:
+            adjacent_point.y -= 1;
+            break;
+          };
           break;
         }
         if (adjacent_point.x < 0 || adjacent_point.x >= map_width ||
@@ -412,29 +496,65 @@ protected:
         }
       };
 
-      if (up.has_value() && get_kfs(up.value()) == kfs_type::r2kfs) {
+      if (up.has_value() &&
+          (must_be_walked_points.find(up.value()) !=
+               must_be_walked_points.end() ||
+           (ext_r2kfs_count + r2kfs_must_be_grabed <
+            max_r2kfs_can_be_grabed)) &&
+          get_kfs(up.value()) == kfs_type::r2kfs) {
         gen_grab_command();
         local_map[up.value().x][up.value().y] = kfs_type::empty;
+        if (must_be_walked_points.find(up.value()) ==
+            must_be_walked_points.end()) {
+          ++ext_r2kfs_count;
+        }
       }
-      if (left.has_value() && get_kfs(left.value()) == kfs_type::r2kfs) {
+      if (left.has_value() &&
+          (must_be_walked_points.find(left.value()) !=
+               must_be_walked_points.end() ||
+           (ext_r2kfs_count + r2kfs_must_be_grabed <
+            max_r2kfs_can_be_grabed)) &&
+          get_kfs(left.value()) == kfs_type::r2kfs) {
         commands.push(command::turn_left);
         gen_grab_command();
         commands.push(command::turn_right);
         local_map[left.value().x][left.value().y] = kfs_type::empty;
+        if (must_be_walked_points.find(left.value()) ==
+            must_be_walked_points.end()) {
+          ++ext_r2kfs_count;
+        }
       }
-      if (right.has_value() && get_kfs(right.value()) == kfs_type::r2kfs) {
+      if (right.has_value() &&
+          (must_be_walked_points.find(right.value()) !=
+               must_be_walked_points.end() ||
+           (ext_r2kfs_count + r2kfs_must_be_grabed <
+            max_r2kfs_can_be_grabed)) &&
+          get_kfs(right.value()) == kfs_type::r2kfs) {
         commands.push(command::turn_right);
         gen_grab_command();
         commands.push(command::turn_left);
         local_map[right.value().x][right.value().y] = kfs_type::empty;
+        if (must_be_walked_points.find(right.value()) ==
+            must_be_walked_points.end()) {
+          ++ext_r2kfs_count;
+        }
       }
-      if (down.has_value() && get_kfs(down.value()) == kfs_type::r2kfs) {
+      if (down.has_value() &&
+          (must_be_walked_points.find(down.value()) !=
+               must_be_walked_points.end() ||
+           (ext_r2kfs_count + r2kfs_must_be_grabed <
+            max_r2kfs_can_be_grabed)) &&
+          get_kfs(down.value()) == kfs_type::r2kfs) {
         commands.push(command::turn_right);
         commands.push(command::turn_right);
         gen_grab_command();
         commands.push(command::turn_right);
         commands.push(command::turn_right);
         local_map[down.value().x][down.value().y] = kfs_type::empty;
+        if (must_be_walked_points.find(down.value()) ==
+            must_be_walked_points.end()) {
+          ++ext_r2kfs_count;
+        }
       }
 
       if (current_direction == next_direction) {
