@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,8 @@ find_package(onnxruntime REQUIRED)
 
 add_library(asio INTERFACE)
 target_include_directories(asio INTERFACE ${CMAKE_SOURCE_DIR}/asio/include)
+
+add_subdirectory(json)
 
 file(GLOB INCLUDE_FILES "include/*.hpp")
 
@@ -157,6 +159,7 @@ target_link_libraries(path_planning_test PUBLIC
   ${OpenCV_LIBS}
   onnxruntime::onnxruntime
   asio
+  nlohmann_json
 )
 target_compile_options(path_planning_test PUBLIC
   "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>"
